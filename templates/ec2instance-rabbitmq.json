@@ -1,0 +1,256 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description" : "CFN - RabbitMQ",
+    "Parameters" : {
+        "KeyName" : {
+            "Description" : "The EC2 Key Pair to allow SSH access to the instance",
+            "Type" : "String"
+        },
+	    "InstanceType": {
+	      "Default": "m1.small",
+	      "Description" : "Type of EC2 instance for web server",
+	      "Type": "String",
+	      "AllowedValues" : [ "t1.micro", "m1.small", "m1.large", "m1.xlarge", "m2.xlarge", "m2.2xlarge", "m2.4xlarge", "c1.medium", "c1.xlarge", "cc1.4xlarge" ],
+	      "ConstraintDescription" : "must contain only alphanumeric characters."
+	    },
+	    "ChefServerURL" : {
+	      "Description" : "URL of Chef Server",
+	      "Type": "String"
+	    },
+	    "ChefClientValidator" : {
+	      "Description" : "client name of the validator pem file",
+	      "Type": "String"
+	    },
+	    "ChefServerPrivateKeyBucket" : {
+	      "Description" : "S3 bucket containing files needed by Chef",
+	      "Type": "String",
+	      "Default": "chef-server-private-key-bucket"
+	    },
+	    "ChefServerSecurityGroup" : {
+	      "Description" : "Security group to get access to Opscode Chef Server",
+	      "Type": "String"
+	    }
+    },
+    
+    "Mappings" : {
+    "AWSInstanceType2Arch" : {
+      "t1.micro"    : { "Arch" : "32" },
+      "m1.small"    : { "Arch" : "32" },
+      "m1.large"    : { "Arch" : "64" },
+      "m1.xlarge"   : { "Arch" : "64" },
+      "m2.xlarge"   : { "Arch" : "64" },
+      "m2.2xlarge"  : { "Arch" : "64" },
+      "m2.4xlarge"  : { "Arch" : "64" },
+      "c1.medium"   : { "Arch" : "32" },
+      "c1.xlarge"   : { "Arch" : "64" },
+      "cc1.4xlarge" : { "Arch" : "64" }
+    },
+    "AWSRegionArch2AMI" : {
+      "us-east-1" :      { "32" : "ami-06ad526f", "64" : "ami-1aad5273" },
+      "us-west-1" :      { "32" : "ami-116f3c54", "64" : "ami-136f3c56" },
+      "eu-west-1" :      { "32" : "ami-480f3d3c", "64" : "ami-1a0f3d6e" },
+      "ap-southeast-1" : { "32" : "ami-62582130", "64" : "ami-60582132" },
+      "ap-northeast-1" : { "32" : "ami-d8b812d9", "64" : "ami-dab812db" }
+      }
+	},
+
+  "Resources" : {
+
+    "ChefClientUser" : {
+      "Type" : "AWS::IAM::User",
+      "Properties" : {
+        "Path": "/",
+        "Policies": [{
+          "PolicyName": "root",
+          "PolicyDocument": { "Statement":[{
+            "Effect":"Allow",
+            "Action": [
+              "cloudformation:DescribeStackResource",
+              "s3:Get"
+            ],
+            "Resource":"*"
+          }]}
+        }]
+      }
+    },
+
+    "HostKeys" : {
+      "Type" : "AWS::IAM::AccessKey",
+      "Properties" : {
+        "UserName" : {"Ref": "ChefClientUser"}
+      }
+    },  
+
+    "BucketPolicy" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "ReadPolicy",
+          "Statement"    : [{
+            "Sid"        : "ReadAccess",
+            "Action"     : ["s3:GetObject"],
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", {"Ref" : "ChefServerPrivateKeyBucket"} , "/*"]]},
+            "Principal"  : { "AWS": {"Fn::GetAtt" : ["ChefClientUser", "Arn"]} }
+          }]
+        },
+        "Bucket" : {"Ref" : "ChefServerPrivateKeyBucket"}
+      }
+    },
+    
+    "RabbitMQ": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn" : "BucketPolicy",
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+          "config" : {
+            "packages" : {
+              "rubygems" : {
+                "chef" : [],
+                "ohai" : ["0.6.4"]
+              },
+              "apt" : {
+                "ruby"            : [],
+                "ruby-dev"        : [],
+                "libopenssl-ruby" : [],
+                "rdoc"            : [],
+                "ri"              : [],
+                "irb"             : [],
+                "build-essential" : [],
+                "wget"            : [],
+                "ssl-cert"        : [],
+                "rubygems"        : [],
+                "s3cmd"           : []
+              }
+            },
+            "files" : {
+              "/etc/chef/solo.rb" : {
+                "content" : { "Fn::Join" : ["\n", [
+                  "file_cache_path \"/tmp/chef-solo\"",
+                  "cookbook_path \"/tmp/chef-solo/cookbooks\""
+                  ]]},
+                "mode"  : "000644",
+                "owner" : "root",
+                "group" : "root"
+              },
+              "/etc/chef/chef.json" : {
+                "content" : {
+                  "chef_client": {
+                    "server_url": { "Ref" : "ChefServerURL" }
+                  },
+                  "run_list": [ "recipe[chef-client::config]", "recipe[chef-client]" ]
+                },
+                "mode"  : "000644",
+                "owner" : "root",
+                "group" : "root"
+              },
+              "/etc/chef/roles.json" : {
+                "content" : {
+                  "run_list": [ "role[rabbitmq]" ],
+                  "tags": { "Ref": "AWS::StackName" }
+                },
+                "mode"  : "000644",
+                "owner" : "root",
+                "group" : "root"
+              },
+              "/home/ubuntu/.s3cfg" : {
+                "content" : { "Fn::Join" : ["", [
+                  "[default]\n",
+                  "access_key = ", { "Ref" : "HostKeys" }, "\n",
+                  "secret_key = ", {"Fn::GetAtt": ["HostKeys", "SecretAccessKey"]}, "\n",
+                  "use_https = True\n"
+                  ]]},
+                "mode"   : "000644",
+                "owner"  : "ubuntu",
+                "group"  : "ubuntu"
+              },
+              "/var/lib/gems/1.8/gems/ohai-0.6.4/lib/ohai/plugins/cfn.rb" : {
+                "source" : "https://s3.amazonaws.com/cloudformation-examples/cfn.rb",
+                "mode"   : "000644",
+                "owner"  : "root",
+                "group"  : "root"
+              }
+            }
+          }
+        }
+      },
+
+      "Properties": {
+        "SecurityGroups": [ { "Ref" : "EC2SecurityGroup" }, { "Ref": "ChefServerSecurityGroup" } ],
+        "ImageId": { "Fn::FindInMap": [ "AWSRegionArch2AMI", { "Ref": "AWS::Region" }, { "Fn::FindInMap": [ "AWSInstanceType2Arch", { "Ref": "InstanceType" }, "Arch" ] } ]
+        },
+        "UserData" : { "Fn::Base64" : { "Fn::Join" : ["", [
+            "#!/bin/bash -v\n",
+
+            "function error_exit\n",
+            "{\n",
+            "  cfn-signal -e 1 -r \"$1\" '", { "Ref" : "ChefClientWaitHandle" }, "'\n",
+            "  exit 1\n",
+            "}\n",
+
+            "apt-get -y install python-setuptools\n",
+            "apt-get update\n",
+            "easy_install https://s3.amazonaws.com/cfn-init-demo/aws-cfn-bootstrap-1.0.tar.gz\n",
+            "cfn-init --region ", { "Ref" : "AWS::Region" },
+            "    -s ", { "Ref" : "AWS::StackName" }, " -r RabbitMQ ",
+            "         --access-key ", { "Ref" : "HostKeys" },
+            "         --secret-key ", {"Fn::GetAtt": ["HostKeys", "SecretAccessKey"]},
+            "         --region     ", { "Ref" : "AWS::Region" }, " || error_exit 'Failed to run cfn-init'\n",
+
+            "# Fixup path and links for the bootstrap script\n",
+            "export PATH=$PATH:/var/lib/gems/1.8/bin\n",
+
+            "# Bootstrap chef\n",
+            "chef-solo -c /etc/chef/solo.rb -j /etc/chef/chef.json -r http://s3.amazonaws.com/chef-solo/bootstrap-latest.tar.gz  > /tmp/chef_solo.log 2>&1 || error_exit 'Failed to bootstrap chef client'\n",
+
+            "# Fixup the server URL in client.rb\n",
+            "s3cmd -c /home/ubuntu/.s3cfg get s3://", { "Ref" : "ChefServerPrivateKeyBucket" }, "/validation.pem /etc/chef/validation.pem > /tmp/get_validation_key.log 2>&1 || error_exit 'Failed to get Chef Server validation key'\n",
+            "sed -i 's|http://localhost:4000|", { "Ref" : "ChefServerURL" }, "|g' /etc/chef/client.rb\n",
+            "sed -i 's|chef-validator|", { "Ref" : "ChefClientValidator" }, "|g' /etc/chef/client.rb\n",
+            "chef-client -j /etc/chef/roles.json > /tmp/initialize_client.log 2>&1 || error_exit 'Failed to initialize host via chef client' \n",
+
+            "# If all went well, signal success\n",
+            "cfn-signal -e $? -r 'Chef Server configuration' '", { "Ref" : "ChefClientWaitHandle" }, "'\n"
+        ]]}},
+        "KeyName": { "Ref": "KeyName" },
+        "InstanceType": { "Ref": "InstanceType" }
+      }
+    },
+    
+	
+
+    "EC2SecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Open up SSH access and HTTP over port 80",
+        "SecurityGroupIngress" : [
+          { "IpProtocol": "tcp", "FromPort": "22",   "ToPort": "22",   "CidrIp": "0.0.0.0/0" },
+          { "IpProtocol": "tcp", "FromPort": "80",   "ToPort": "80",   "CidrIp": "0.0.0.0/0" }
+        ]
+      }
+    },
+
+      
+    "ChefClientWaitHandle" : {
+      "Type" : "AWS::CloudFormation::WaitConditionHandle"
+    },
+
+    "ChefClientWaitCondition" : {
+      "Type" : "AWS::CloudFormation::WaitCondition",
+      "DependsOn" : "RabbitMQ",
+      "Properties" : {
+        "Handle"  : { "Ref" : "ChefClientWaitHandle" },
+        "Timeout" : "1200"
+     }
+   }  
+
+  },
+
+
+
+
+  "Outputs" : 
+	{
+	}
+}

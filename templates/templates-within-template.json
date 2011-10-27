@@ -1,0 +1,111 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description" : "CFN - Templates within template",
+    "Parameters" : {
+        "KeyName" : {
+            "Description" : "The EC2 Key Pair to allow SSH access to the instance",
+            "Type" : "String"
+        },
+	    "InstanceType": {
+	      "Default": "m1.small",
+	      "Description" : "Type of EC2 instance for web server",
+	      "Type": "String",
+	      "AllowedValues" : [ "t1.micro", "m1.small", "m1.large", "m1.xlarge", "m2.xlarge", "m2.2xlarge", "m2.4xlarge", "c1.medium", "c1.xlarge", "cc1.4xlarge" ],
+	      "ConstraintDescription" : "must contain only alphanumeric characters."
+	    },
+	    "ChefServerURL" : {
+	      "Description" : "URL of Chef Server",
+	      "Type": "String"
+	    },
+	    "ChefClientValidator" : {
+	      "Description" : "client name of the validator pem file",
+	      "Type": "String"
+	    },
+	    "ChefServerPrivateKeyBucket" : {
+	      "Description" : "S3 bucket containing files needed by Chef",
+	      "Type": "String"
+	    },
+	    "ChefServerSecurityGroup" : {
+	      "Description" : "Security group to get access to Opscode Chef Server",
+	      "Type": "String"
+	    }
+    },
+    
+  "Resources" : {
+
+    "ChefClientUser" : {
+      "Type" : "AWS::IAM::User",
+      "Properties" : {
+        "Path": "/",
+        "Policies": [{
+          "PolicyName": "root",
+          "PolicyDocument": { "Statement":[{
+            "Effect":"Allow",
+            "Action": [
+              "cloudformation:DescribeStackResource",
+              "s3:Get"
+            ],
+            "Resource":"*"
+          }]}
+        }]
+      }
+    },
+
+    "HostKeys" : {
+      "Type" : "AWS::IAM::AccessKey",
+      "Properties" : {
+        "UserName" : {"Ref": "ChefClientUser"}
+      }
+    },  
+
+    "BucketPolicy" : {
+      "Type" : "AWS::S3::BucketPolicy",
+      "Properties" : {
+        "PolicyDocument": {
+          "Version"      : "2008-10-17",
+          "Id"           : "ReadPolicy",
+          "Statement"    : [{
+            "Sid"        : "ReadAccess",
+            "Action"     : ["s3:GetObject"],
+            "Effect"     : "Allow",
+            "Resource"   : { "Fn::Join" : ["", ["arn:aws:s3:::", {"Ref" : "ChefServerPrivateKeyBucket"} , "/*"]]},
+            "Principal"  : { "AWS": {"Fn::GetAtt" : ["ChefClientUser", "Arn"]} }
+          }]
+        },
+        "Bucket" : {"Ref" : "ChefServerPrivateKeyBucket"}
+      }
+    },
+    
+    "EC2SecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Open up SSH access and HTTP over port 80",
+        "SecurityGroupIngress" : [
+          { "IpProtocol": "tcp", "FromPort": "22",   "ToPort": "22",   "CidrIp": "0.0.0.0/0" },
+          { "IpProtocol": "tcp", "FromPort": "80",   "ToPort": "80",   "CidrIp": "0.0.0.0/0" }
+        ]
+      }
+    },
+    
+    "RabbitMQ": {
+      "Type" : "AWS::CloudFormation::Stack",
+       "Properties" : {
+	     "TemplateURL" :  "https://s3.amazonaws.com/<bucket>/<template>.json",
+	     "KeyName" :          { "Ref" : "KeyName" },
+         "InstanceType" :     { "Ref" : "InstanceType"},
+         "EC2SecurityGroup" : { "Ref" : "EC2SecurityGroup" },
+	     "ChefClientUser" 	: { "Ref" : "ChefClientUser" },
+	     "HostKeys" 		: { "Ref" : "HostKeys" },
+	     "BucketPolicy"		: { "Ref" : "BucketPolicy" }
+       }
+    }
+
+  },
+
+
+
+
+  "Outputs" : 
+	{
+	}
+}
