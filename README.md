@@ -21,7 +21,6 @@ I've given a role and tagged this instance with the Stackname.
 
 An autoscaling group is quite similar, except the Userdata which performs the bootstrapping is located in the AWS::AutoScaling::LaunchConfiguration section. 
 
-snippet-
 ```json
 "LaunchConfig" : {
       "Type" : "AWS::AutoScaling::LaunchConfiguration",
